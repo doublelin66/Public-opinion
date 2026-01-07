@@ -37,7 +37,6 @@ def get_rss_urls(category):
         encoded_query = urllib.parse.quote(query_with_time)
         return f"{base_search}?q={encoded_query}&scoring=n&{suffix}"
 
-    # Google News 固定分類 ID (備援用)
     topic_ids = {
         "政治": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRGx1YlY4U0FBUWlHZ0pKVERNU0FBUW",
         "財經": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRGx6TVdZU0FBUWlHZ0pKVERNU0FBUW",
@@ -62,7 +61,6 @@ def get_rss_urls(category):
     elif category == "國際": primary_url = make_search_url("國際新聞 美國 日本 中國")
     elif category == "健康": primary_url = make_search_url("健康醫療 食安 流感 腸病毒")
 
-    # 備援網址
     backup_url = ""
     if category in topic_ids:
         backup_url = f"{base_topic}/{topic_ids[category]}?{suffix}"
@@ -71,7 +69,7 @@ def get_rss_urls(category):
 
     return [primary_url, backup_url]
 
-# ================= 4. 核心功能：AI 分析 (含自動換模型) =================
+# ================= 4. 核心功能：AI 分析 (修正模型清單) =================
 @st.cache_data(ttl=1800) 
 def run_analysis(category):
     debug_logs = []
@@ -80,7 +78,6 @@ def run_analysis(category):
     target_urls = get_rss_urls(category)
     all_raw_data = []
     
-    # User-Agent 輪替
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
@@ -97,7 +94,7 @@ def run_analysis(category):
     for url in target_urls:
         if success_count > 0 and category != "首頁": break 
         try:
-            time.sleep(random.uniform(0.1, 0.5)) # 降低延遲，加快速度
+            time.sleep(random.uniform(0.1, 0.5))
             response = requests.get(url, headers=headers, cookies=cookies, timeout=10)
             if response.status_code == 200:
                 feed = feedparser.parse(response.content)
@@ -118,7 +115,7 @@ def run_analysis(category):
     if not all_raw_data:
         return [], debug_logs
 
-    # --- 關鍵修改：模型自動輪替機制 ---
+    # --- AI 分析 ---
     news_json = json.dumps(all_raw_data, ensure_ascii=False)
     
     if category == "首頁":
@@ -157,12 +154,11 @@ def run_analysis(category):
     {json_example}
     """
 
-    # 定義模型優先順序：1.5 Flash (額度最高) -> 1.5 Pro -> Pro -> 2.5 Flash
+    # --- 關鍵修正：依照您診斷報告中「確定存在」的模型清單 ---
     models_to_try = [
-        'gemini-1.5-flash', # 第一志願：每天 1500 次，速度快
-        'gemini-1.5-pro',   # 第二志願：比較聰明，每天 50 次
-        'gemini-pro',       # 第三志願：舊版，穩定
-        'gemini-2.5-flash'  # 最後手段：每天只有 20 次 (您剛剛就是卡在這)
+        'gemini-2.0-flash',       # 主力：存在且額度較高
+        'gemini-2.0-flash-exp',   # 備援 1
+        'gemini-2.5-flash'        # 備援 2 (限制嚴格，放最後)
     ]
 
     safety_settings = [
@@ -173,7 +169,6 @@ def run_analysis(category):
     ]
     generation_config = {"temperature": 1, "response_mime_type": "application/json"}
 
-    # 迴圈嘗試所有模型
     for model_name in models_to_try:
         try:
             debug_logs.append(f"嘗試使用模型: {model_name}")
@@ -183,15 +178,14 @@ def run_analysis(category):
             cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
             
             if cleaned_text:
-                return json.loads(cleaned_text), debug_logs # 成功就直接回傳，結束函式
+                return json.loads(cleaned_text), debug_logs
                 
         except Exception as e:
-            # 如果是 429 錯誤 (Quota exceeded)，就印出來並繼續下一個迴圈
             debug_logs.append(f"❌ {model_name} 失敗: {str(e)}")
-            time.sleep(1) # 休息一秒再試下一個
+            time.sleep(1)
             continue
             
-    return [], debug_logs # 如果全部模型都失敗，才回傳空值
+    return [], debug_logs
 
 # ================= 5. 介面顯示 (UI) =================
 
@@ -222,7 +216,7 @@ with col2:
 
 st.divider()
 
-with st.spinner(f'🔍 正在掃描 {current_category} 版面，並嘗試連接最佳 AI 模型...'):
+with st.spinner(f'🔍 正在掃描 {current_category} 版面，並嘗試連接 AI 模型...'):
     trends, logs = run_analysis(current_category)
 
 if trends:
