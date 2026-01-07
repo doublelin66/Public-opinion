@@ -13,23 +13,29 @@ st.set_page_config(
     layout="wide"
 )
 
-# ================= 2. 安全讀取金鑰 (核心保護區) =================
+# ================= 2. 安全讀取金鑰 =================
 try:
-    # 這一行前面必須有 4 個空格
     API_KEY = st.secrets["GOOGLE_API_KEY"]
 except Exception as e:
-    # 這裡也要縮排
     st.error("⚠️ 找不到金鑰！請確認您已在 Streamlit Cloud 的 Advanced Settings -> Secrets 中設定了 'GOOGLE_API_KEY'。")
     st.stop()
 
-# 設定 Google AI
 genai.configure(api_key=API_KEY)
 
 # ================= 3. 核心功能：爬蟲 + AI 分析 =================
 @st.cache_data(ttl=3600)
 def run_analysis():
-    # A. 選擇模型
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # --- 🛡️ 模型保險機制 (關鍵修正) ---
+    # 嘗試使用最新的 Flash，如果失敗則自動切換回 Pro
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        # 測試一下模型是否活著
+        model.generate_content("test")
+        print("✅ 使用模型: Gemini 1.5 Flash")
+    except:
+        print("⚠️ Flash 模型載入失敗，切換至 gemini-pro")
+        model = genai.GenerativeModel('gemini-pro')
+    # ----------------------------------
     
     # B. 抓取 Google News
     rss_url = "https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
@@ -38,8 +44,6 @@ def run_analysis():
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         response = requests.get(rss_url, headers=headers, timeout=10)
         feed = feedparser.parse(response.content)
-        
-        # 取前 12 則
         raw_data = [{"title": entry.title, "pubDate": entry.published} for entry in feed.entries[:12]]
     except Exception as e:
         st.error(f"新聞抓取失敗: {e}")
@@ -51,11 +55,10 @@ def run_analysis():
     # C. AI 分析
     prompt = f"""
     你是一個專業的輿情分析師。請閱讀以下台灣熱門新聞標題，並產出 JSON 格式的趨勢報告。
-    
     原始新聞資料：
     {json.dumps(raw_data, ensure_ascii=False)}
     
-    請嚴格遵守以下 JSON 輸出格式 (Array)：
+    請嚴格遵守以下 JSON 輸出格式 (Array)，不要加 markdown：
     [
       {{
         "id": 1,
@@ -71,9 +74,12 @@ def run_analysis():
     try:
         response = model.generate_content(prompt)
         cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
+        # 有時候 AI 會因為內容敏感拒絕回答，這裡做個保護
+        if not cleaned_text: 
+            return []
         return json.loads(cleaned_text)
     except Exception as e:
-        st.error(f"AI 分析失敗: {e}")
+        st.warning(f"AI 分析暫時無法使用 (可能因額度或模型問題): {e}")
         return []
 
 # ================= 4. 介面顯示 =================
@@ -89,11 +95,10 @@ with col2:
 
 st.divider()
 
-with st.spinner('🤖 AI 正在閱讀新聞並分析趨勢中... (首次執行約需 10 秒)'):
+with st.spinner('🤖 AI 正在閱讀新聞並分析趨勢中... (首次執行約需 10-15 秒)'):
     trends = run_analysis()
 
 if trends:
-    # CSS 樣式
     st.markdown("""
     <style>
         .trend-card {background-color: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; border-left: 5px solid #FF7F32;}
@@ -143,4 +148,4 @@ if trends:
             """, unsafe_allow_html=True)
 
 else:
-    st.info("尚無資料，請確認 API Key 設定是否正確。")
+    st.info("尚無資料，請稍後再試。")
