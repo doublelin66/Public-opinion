@@ -9,7 +9,7 @@ import urllib.parse
 
 # ================= 1. 基礎設定 =================
 st.set_page_config(
-    page_title="🇹🇼臺灣熱門討論",
+    page_title="🇹🇼台灣熱門討論",
     page_icon="🔥",
     layout="wide"
 )
@@ -23,24 +23,26 @@ except:
 
 genai.configure(api_key=API_KEY)
 
-# ================= 3. 定義新聞來源 =================
+# ================= 3. 定義新聞來源 (改用更穩定的 Search RSS) =================
 def get_rss_url(category):
-    base_url = "https://news.google.com/rss"
+    # Google News RSS 基礎網址
+    base_search = "https://news.google.com/rss/search"
     suffix = "hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     
+    # 使用「關鍵字搜尋」代替「Topic ID」，大幅提升穩定度
     topics = {
         "首頁": [
-            f"https://trends.google.com/trends/trendingsearches/daily/rss?geo=TW",
-            f"{base_url}?{suffix}"
+            f"https://trends.google.com/trends/trendingsearches/daily/rss?geo=TW", # 搜尋熱榜 (最穩)
+            f"https://news.google.com/rss?{suffix}" # 綜合頭條
         ],
-        "政治": [f"{base_url}/search?q=台灣政治&{suffix}"],
-        "財經": [f"{base_url}/topics/CAAqKggKIiRDQkFTRlFvSUwyMHZNRGx6TVdZU0FBUWlHZ0pKVERNU0FBUW?{suffix}"],
-        "科技": [f"{base_url}/topics/CAAqKggKIiRDQkFTRlFvSUwyMHZNRGRqTVhZU0FBUWlHZ0pKVERNU0FBUW?{suffix}"],
-        "娛樂": [f"{base_url}/topics/CAAqKggKIiRDQkFTRlFvSUwyMHZNREpxYW5RU0FBUWlHZ0pKVERNU0FBUW?{suffix}"],
-        "運動": [f"{base_url}/topics/CAAqKggKIiRDQkFTRlFvSUwyMHZNRFp1ZEdvU0FBUWlHZ0pKVERNU0FBUW?{suffix}"],
-        "國際": [f"{base_url}/topics/CAAqKggKIiRDQkFTRlFvSUwyMHZNRGx1YlY4U0FBUWlHZ0pKVERNU0FBUW?{suffix}"],
-        "生活": [f"{base_url}/topics/CAAqKggKIiRDQkFTRlFvSUwyMHZNRGx1YlY4U0FBUWlHZ0pKVERNU0FBUW?{suffix}"],
-        "健康": [f"{base_url}/search?q=健康醫療&{suffix}"]
+        # 以下全部改用 Search Query，確保一定有資料
+        "政治": [f"{base_search}?q=台灣政治+立法院&{suffix}"],
+        "財經": [f"{base_search}?q=台灣股市+財經+台積電&{suffix}"],
+        "科技": [f"{base_search}?q=台灣科技+半導體+AI&{suffix}"],
+        "娛樂": [f"{base_search}?q=台灣娛樂新聞+網紅+藝人&{suffix}"],
+        "運動": [f"{base_search}?q=中華職棒+NBA+台灣運動&{suffix}"],
+        "國際": [f"{base_search}?q=國際新聞+美國+中國&{suffix}"],
+        "健康": [f"{base_search}?q=健康醫療+食安+疫情&{suffix}"]
     }
     return topics.get(category, topics["首頁"])
 
@@ -65,22 +67,30 @@ def run_analysis(category):
     # B. 抓取資料
     urls = get_rss_url(category)
     all_raw_data = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    
+    # 增加 Cookies 繞過 Google 的一些反爬蟲機制
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://news.google.com/"
+    }
+    cookies = {"CONSENT": "YES+"} 
 
     for url in urls:
         try:
-            response = requests.get(url, headers=headers, timeout=10)
-            feed = feedparser.parse(response.content)
-            
-            limit = 25 if category == "首頁" else 15
-            
-            for entry in feed.entries[:limit]:
-                traffic = entry.ht_approx_traffic if hasattr(entry, 'ht_approx_traffic') else "N/A"
-                all_raw_data.append({
-                    "title": entry.title,
-                    "traffic": traffic,
-                    "snippet": entry.summary if hasattr(entry, 'summary') else ""
-                })
+            response = requests.get(url, headers=headers, cookies=cookies, timeout=10)
+            if response.status_code == 200:
+                feed = feedparser.parse(response.content)
+                
+                limit = 25 if category == "首頁" else 15
+                
+                for entry in feed.entries[:limit]:
+                    traffic = entry.ht_approx_traffic if hasattr(entry, 'ht_approx_traffic') else "N/A"
+                    all_raw_data.append({
+                        "title": entry.title,
+                        "traffic": traffic,
+                        "snippet": entry.summary if hasattr(entry, 'summary') else ""
+                    })
         except:
             continue
 
@@ -151,17 +161,22 @@ category_map = {
 }
 current_category = category_map[selection]
 
-# 主畫面
+# --- 標題顯示邏輯修正 ---
 col1, col2 = st.columns([3, 1])
 with col1:
-    st.title(f"🇹🇼 {selection.split(' ')[-1]}熱門討論")
-    # 這裡的時間會隨著按鈕按下而更新
+    # 這裡做了判斷：如果是首頁，直接顯示「台灣熱門討論」
+    # 如果是其他頁面，則顯示「政治熱門討論」、「財經熱門討論」等
+    if current_category == "首頁":
+        display_title = "🇹🇼 台灣熱門討論"
+    else:
+        display_title = f"🇹🇼 {current_category}熱門討論"
+        
+    st.title(display_title)
     st.caption(f"即時 AI 輿情分析 | 更新: {datetime.now().strftime('%H:%M')}")
 
 with col2:
-    # --- 修改點：按鈕文字改成「重新整理」 ---
     if st.button("🔄 重新整理"):
-        st.cache_data.clear() # 清除快取，確保時間和資料都是最新的
+        st.cache_data.clear()
         st.rerun()
 
 st.divider()
