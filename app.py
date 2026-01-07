@@ -8,8 +8,8 @@ from datetime import datetime
 
 # ================= 1. 基礎設定 =================
 st.set_page_config(
-    page_title="Clarity - 深度輿情儀表板",
-    page_icon="⚡",
+    page_title="🇹🇼臺灣熱門討論",  # <--- 修改這裡：瀏覽器分頁名稱
+    page_icon="🔥",
     layout="wide"
 )
 
@@ -22,39 +22,45 @@ except:
 
 genai.configure(api_key=API_KEY)
 
-# ================= 3. 核心功能：多重來源爬蟲 + AI 分析 =================
-@st.cache_data(ttl=3600)
+# ================= 3. 核心功能：搜尋趨勢 + 新聞爬蟲 =================
+@st.cache_data(ttl=1800) # 30 分鐘更新一次
 def run_analysis():
-    # --- A. 模型設定 (使用 Gemini 2.5) ---
-    # 優先嘗試 2.5 Flash，如果失敗則退回 Pro
+    # --- A. 模型設定 ---
     model_name = 'gemini-2.5-flash'
     try:
         model = genai.GenerativeModel(model_name)
     except:
         model = genai.GenerativeModel('gemini-pro')
 
-    # --- B. 定義多個新聞來源 (擴充資訊量) ---
+    # --- B. 定義來源 ---
     rss_sources = {
-        "💰 財經": "https://news.google.com/rss/topics/CAAqKggKIiRDQkFTRlFvSUwyMHZNRGx6TVdZU0FBUWlHZ0pKVERNU0FBUW?hl=zh-TW&gl=TW&ceid=TW%3Azh-Hant",
-        "🤖 科技": "https://news.google.com/rss/topics/CAAqKggKIiRDQkFTRlFvSUwyMHZNRGRqTVhZU0FBUWlHZ0pKVERNU0FBUW?hl=zh-TW&gl=TW&ceid=TW%3Azh-Hant",
-        "🔥 焦點": "https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+        "🔥 搜尋熱榜": "https://trends.google.com/trends/trendingsearches/daily/rss?geo=TW",
+        "🍿 娛樂": "https://news.google.com/rss/topics/CAAqKggKIiRDQkFTRlFvSUwyMHZNREpxYW5RU0FBUWlHZ0pKVERNU0FBUW?hl=zh-TW&gl=TW&ceid=TW%3Azh-Hant",
+        "📰 綜合": "https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     }
     
     all_raw_data = []
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
-    # 迴圈抓取每一個來源
+    # 迴圈抓取
     for category_name, url in rss_sources.items():
         try:
             response = requests.get(url, headers=headers, timeout=10)
             feed = feedparser.parse(response.content)
             
-            # 每個分類抓前 10 則
-            for entry in feed.entries[:10]:
+            # 搜尋熱榜抓 20 則，其他抓 10 則
+            limit = 20 if "搜尋" in category_name else 10
+            
+            for entry in feed.entries[:limit]:
+                traffic = "N/A"
+                if hasattr(entry, 'ht_approx_traffic'):
+                    traffic = entry.ht_approx_traffic
+                
                 all_raw_data.append({
                     "source": category_name,
-                    "title": entry.title, 
-                    "pubDate": entry.published
+                    "title": entry.title,
+                    "traffic": traffic,
+                    "snippet": entry.summary if hasattr(entry, 'summary') else ""
                 })
         except Exception as e:
             continue
@@ -63,30 +69,32 @@ def run_analysis():
         return []
 
     # --- C. AI 分析 ---
-    # 先把 JSON 轉成字串，避免放在 f-string 裡容易出錯
     news_json = json.dumps(all_raw_data, ensure_ascii=False)
 
-    # Prompt 指令
     prompt = f"""
-    你是一個專業的股市輿情分析師。請閱讀以下 30 則台灣新聞標題。
-    請進行深度分析，並產出 JSON 格式的報告。
+    你是一個台灣社群趨勢觀察家。請分析以下來自「Google 搜尋熱榜」與「新聞」的資料。
+    使用者想知道 **「🇹🇼 台灣現在最熱門的討論是什麼？」**。
 
-    原始新聞資料：
+    原始資料：
     {news_json}
     
-    任務要求：
-    1. 去除重複新聞。
-    2. 只保留對「投資市場、產業趨勢」有意義的新聞。
-    3. 依照「重要性」排序。
+    🔥 任務指令：
+    1. **主題要多**：請列出 **15 到 20 個** 不同的獨立話題。
+    2. **話題多元**：涵蓋 政治、娛樂(藝人/網紅)、運動(棒球/籃球)、生活、財經。
+    3. **討論熱度估算**：
+       - 若有流量數據(如 "50,000+")，分數給予 (90-100)。
+       - 若無流量但為頭條，分數給予 (70-85)。
+    4. **繁體中文**：請用台灣人習慣的用語撰寫 summary。
 
-    請嚴格遵守以下 JSON 輸出格式 (Array)，直接輸出 JSON 不要加 markdown：
+    請嚴格遵守以下 JSON 輸出格式 (Array)，直接輸出 JSON：
     [
       {{
         "id": 1,
-        "keyword": "核心關鍵字",
-        "category": "分類 (例如: Tech, Finance)",
-        "score": 90,
-        "summary": "50字內繁體中文深度短評。",
+        "keyword": "話題關鍵字",
+        "category": "分類 (Entertainment, Sports, Politics, Tech, Life)",
+        "score": 95,
+        "volume_label": "討論量級 (例如: 5萬+ 搜尋 / 熱議中)",
+        "summary": "簡短說明為什麼大家在討論這個。",
         "hashtags": ["#tag1", "#tag2"]
       }}
     ]
@@ -103,69 +111,95 @@ def run_analysis():
 # ================= 4. 介面顯示 (UI) =================
 col1, col2 = st.columns([3, 1])
 with col1:
-    st.title("⚡ Clarity 深度輿情儀表板")
-    st.caption(f"財經 • 科技 • 焦點 | Powered by Gemini 2.5 | 更新: {datetime.now().strftime('%H:%M')}")
+    st.title("🇹🇼臺灣熱門討論")  # <--- 修改這裡：網頁主標題
+    st.caption(f"資料來源：Google 每日搜尋熱榜 + 即時新聞 | 更新: {datetime.now().strftime('%H:%M')}")
 
 with col2:
-    if st.button("🔄 全面更新"):
+    if st.button("🔄 刷新熱榜"):
         st.cache_data.clear()
         st.rerun()
 
 st.divider()
 
-with st.spinner('🤖 AI 正在閱讀 30+ 則新聞並分析中... (需時約 15 秒)'):
+with st.spinner('🔍 正在挖掘全台熱搜與社群話題...'):
     trends = run_analysis()
 
 if trends:
-    # CSS 美化
     st.markdown("""
     <style>
-        .trend-card {background-color: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; border-left: 5px solid #FF7F32;}
-        .score-tag {background-color: #FFF3E0; color: #FF7F32; padding: 4px 12px; border-radius: 20px; font-weight: bold; font-size: 0.9em;}
-        .category-tag {background-color: #f0f2f6; color: #555; padding: 2px 8px; border-radius: 4px; font-size: 0.8em;}
+        .trend-row {
+            background-color: white; 
+            padding: 15px; 
+            border-radius: 10px; 
+            margin-bottom: 12px; 
+            border: 1px solid #eee;
+            transition: transform 0.2s;
+        }
+        .trend-row:hover {
+            transform: scale(1.01);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+        }
+        .rank-num {
+            font-size: 1.5em; 
+            font-weight: bold; 
+            color: #ccc; 
+            width: 40px; 
+            text-align: center;
+        }
+        .rank-1 { color: #FF4B4B; }
+        .rank-2 { color: #FF8F00; }
+        .rank-3 { color: #FFC107; }
+        
+        .volume-badge {
+            background-color: #ffebee; 
+            color: #c62828; 
+            padding: 3px 8px; 
+            border-radius: 12px; 
+            font-size: 0.8em; 
+            font-weight: bold;
+        }
+        .category-badge {
+            background-color: #f1f3f4;
+            color: #555;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+        }
     </style>
     """, unsafe_allow_html=True)
 
-    left_col, right_col = st.columns([2, 1])
+    # 上方圖表
+    st.subheader("📊 話題熱度分佈")
+    df = pd.DataFrame(trends)
+    if not df.empty:
+        st.bar_chart(df.set_index('keyword')['score'], color="#FF4B4B")
 
-    with left_col:
-        st.subheader("🔥 市場熱點解析")
-        for item in trends[:5]:
-            with st.container():
-                st.markdown(f"""
-                <div class="trend-card">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                        <h3 style="margin:0; color:#333; font-size:1.4em;">{item['keyword']}</h3>
-                        <span class="score-tag">🔥 {item['score']}</span>
+    # 排行榜
+    st.subheader("🏆 全台話題排行榜")
+    
+    for i, item in enumerate(trends):
+        rank_class = f"rank-{i+1}" if i < 3 else ""
+        
+        st.markdown(f"""
+        <div class="trend-row">
+            <div style="display:flex; align-items:center;">
+                <div class="rank-num {rank_class}">{i+1}</div>
+                <div style="flex-grow:1; padding-left:15px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <h3 style="margin:0; font-size:1.2em; color:#333;">{item['keyword']}</h3>
+                        <span class="volume-badge">🔥 {item.get('volume_label', '熱議中')}</span>
                     </div>
-                    <div style="margin-bottom:8px;">
-                        <span class="category-tag">{item['category']}</span>
+                    <div style="margin-top:5px; font-size:0.9em; color:#666;">
+                        <span class="category-badge">{item['category']}</span>
+                        <span style="margin-left:8px;">{item['summary']}</span>
                     </div>
-                    <p style="color:#444; font-size:1.1em; line-height:1.5;">{item['summary']}</p>
-                    <div style="margin-top:12px; font-size:0.9em; color:#888;">
+                    <div style="margin-top:8px; font-size:0.85em; color:#888;">
                         {' '.join([f'#{tag}' for tag in item.get('hashtags', [])]).replace('##', '#')}
                     </div>
                 </div>
-                """, unsafe_allow_html=True)
-
-        st.subheader("📈 趨勢權重")
-        df = pd.DataFrame(trends)
-        if not df.empty:
-            st.bar_chart(df.set_index('keyword')['score'], color="#FF7F32")
-
-    with right_col:
-        st.subheader("🏆 重要性排行")
-        for i, item in enumerate(trends):
-            st.markdown(f"""
-            <div style="background:white; padding:12px; margin-bottom:10px; border-radius:10px; display:flex; align-items:center; border:1px solid #eee;">
-                <div style="font-weight:bold; color:#FF7F32; width:30px; font-size:1.2em; text-align:center;">{i+1}</div>
-                <div style="flex-grow:1; padding-left:10px;">
-                    <div style="font-weight:bold; font-size:0.95em; color:#333;">{item['keyword']}</div>
-                    <div style="font-size:0.8em; color:#999;">{item['category']}</div>
-                </div>
-                <div style="font-weight:bold; color:#FF7F32;">{item['score']}</div>
             </div>
-            """, unsafe_allow_html=True)
+        </div>
+        """, unsafe_allow_html=True)
 
 else:
-    st.info("尚無資料，請確認 API Key 設定是否正確。")
+    st.info("尚無資料，請稍後再試。")
