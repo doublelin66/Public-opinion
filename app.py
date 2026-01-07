@@ -5,7 +5,7 @@ import requests
 import json
 import pandas as pd
 from datetime import datetime
-import urllib.parse # 新增這個庫，用來處理網址編碼
+import urllib.parse
 
 # ================= 1. 基礎設定 =================
 st.set_page_config(
@@ -23,15 +23,30 @@ except:
 
 genai.configure(api_key=API_KEY)
 
-# ================= 3. 核心功能：搜尋趨勢 + 新聞爬蟲 =================
-@st.cache_data(ttl=1800) # 30 分鐘更新一次
+# ================= 3. 核心功能：強固型 AI 分析 =================
+@st.cache_data(ttl=1800)
 def run_analysis():
-    # --- A. 模型設定 ---
+    # --- A. 模型與安全設定 (關鍵修正) ---
+    # 1. 解除安全限制，避免新聞因為政治/社會議題被過濾
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    ]
+    
+    # 2. 強制輸出 JSON 格式 (這是 1.5/2.5 模型的新功能，大幅降低格式錯誤)
+    generation_config = {
+        "temperature": 1,
+        "response_mime_type": "application/json"
+    }
+
     model_name = 'gemini-2.5-flash'
     try:
-        model = genai.GenerativeModel(model_name)
+        model = genai.GenerativeModel(model_name, safety_settings=safety_settings, generation_config=generation_config)
     except:
-        model = genai.GenerativeModel('gemini-pro')
+        # 如果 2.5 連線失敗，回退到 Pro (不使用 JSON Mode 以免舊版不支援)
+        model = genai.GenerativeModel('gemini-pro', safety_settings=safety_settings)
 
     # --- B. 定義來源 ---
     rss_sources = {
@@ -71,38 +86,47 @@ def run_analysis():
     news_json = json.dumps(all_raw_data, ensure_ascii=False)
 
     prompt = f"""
-    你是一個台灣社群趨勢觀察家。請分析以下來自「Google 搜尋熱榜」與「新聞」的資料。
-    使用者想知道 **「🇹🇼 台灣現在最熱門的討論是什麼？」**。
+    你是一個台灣社群趨勢觀察家。請分析以下資料並整理出 **15-20 個** 台灣現在最熱門的討論話題。
 
     原始資料：
     {news_json}
     
-    🔥 任務指令：
-    1. **主題要多**：請列出 **15 到 20 個** 不同的獨立話題。
-    2. **話題多元**：涵蓋 政治、娛樂、運動、生活、財經。
-    3. **討論熱度估算**：依照流量數據或新聞重要性給分 (0-100)。
-    4. **繁體中文**：請用台灣人習慣的用語撰寫 summary。
-
-    請嚴格遵守以下 JSON 輸出格式 (Array)，直接輸出 JSON：
+    要求：
+    1. 主題要多元 (政治/娛樂/運動/生活)。
+    2. 有流量數據 (如 "50,000+") 分數給高。
+    3. 繁體中文摘要。
+    
+    請直接回傳 JSON Array：
     [
       {{
         "id": 1,
         "keyword": "話題關鍵字",
         "category": "分類 (Entertainment, Sports, Politics, Tech, Life)",
         "score": 95,
-        "volume_label": "討論量級",
-        "summary": "簡短說明為什麼大家在討論這個。",
-        "hashtags": ["#tag1", "#tag2"]
+        "volume_label": "討論量級 (如: 5萬+ 搜尋)",
+        "summary": "簡短說明。",
+        "hashtags": ["#tag1"]
       }}
     ]
     """
     
     try:
         response = model.generate_content(prompt)
+        
+        # 即使有 JSON Mode，還是做一下字串清理比較保險
         cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
+        
+        # 檢查是否為空 (AI 拒絕回答時會發生)
+        if not cleaned_text:
+            st.warning("AI 回傳空白內容，可能是觸發安全機制，請稍後重試。")
+            return []
+            
         return json.loads(cleaned_text)
     except Exception as e:
-        st.warning(f"AI 分析失敗: {e}")
+        # 印出錯誤與原始文字，方便除錯
+        st.error(f"AI 分析失敗: {e}")
+        # 如果想看 AI 到底回了什麼鬼東西，可以把下面這行取消註解
+        # st.text(response.text if 'response' in locals() else "No Response")
         return []
 
 # ================= 4. 介面顯示 (UI) =================
@@ -124,76 +148,30 @@ with st.spinner('🔍 正在挖掘全台熱搜與社群話題...'):
 if trends:
     st.markdown("""
     <style>
-        /* 讓超連結去除底線，並保持顏色 */
-        a.trend-link {
-            text-decoration: none !important;
-            color: inherit !important;
-            display: block;
-        }
-        
-        .trend-row {
-            background-color: white; 
-            padding: 15px; 
-            border-radius: 10px; 
-            margin-bottom: 12px; 
-            border: 1px solid #eee;
-            transition: all 0.2s ease;
-            cursor: pointer; /* 讓滑鼠變成手指形狀 */
-        }
-        
-        .trend-row:hover {
-            transform: translateY(-2px); /* 輕微浮起 */
-            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-            border-color: #FF4B4B; /* 邊框變色 */
-        }
-
-        .rank-num {
-            font-size: 1.5em; 
-            font-weight: bold; 
-            color: #ccc; 
-            width: 40px; 
-            text-align: center;
-        }
+        a.trend-link { text-decoration: none !important; color: inherit !important; display: block; }
+        .trend-row { background-color: white; padding: 15px; border-radius: 10px; margin-bottom: 12px; border: 1px solid #eee; transition: all 0.2s ease; cursor: pointer; }
+        .trend-row:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.1); border-color: #FF4B4B; }
+        .rank-num { font-size: 1.5em; font-weight: bold; color: #ccc; width: 40px; text-align: center; }
         .rank-1 { color: #FF4B4B; }
         .rank-2 { color: #FF8F00; }
         .rank-3 { color: #FFC107; }
-        
-        .volume-badge {
-            background-color: #ffebee; 
-            color: #c62828; 
-            padding: 3px 8px; 
-            border-radius: 12px; 
-            font-size: 0.8em; 
-            font-weight: bold;
-        }
-        .category-badge {
-            background-color: #f1f3f4;
-            color: #555;
-            padding: 3px 8px;
-            border-radius: 4px;
-            font-size: 0.8em;
-        }
+        .volume-badge { background-color: #ffebee; color: #c62828; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; }
+        .category-badge { background-color: #f1f3f4; color: #555; padding: 3px 8px; border-radius: 4px; font-size: 0.8em; }
     </style>
     """, unsafe_allow_html=True)
 
-    # 上方圖表 (保留)
     st.subheader("📊 話題熱度分佈")
     df = pd.DataFrame(trends)
     if not df.empty:
         st.bar_chart(df.set_index('keyword')['score'], color="#FF4B4B")
 
-    # 排行榜
     st.subheader("🏆 全台話題排行榜 (點擊可看新聞)")
     
     for i, item in enumerate(trends):
         rank_class = f"rank-{i+1}" if i < 3 else ""
-        
-        # 製作 Google 搜尋連結
-        # 使用 urllib.parse.quote 把中文轉成網址編碼 (例如 "台積電" -> "%E5%8F%B0...")
         search_query = urllib.parse.quote(item['keyword'])
         google_url = f"https://www.google.com/search?q={search_query}"
         
-        # 使用 HTML <a> 標籤包住整個卡片，target="_blank" 代表開新視窗
         st.markdown(f"""
         <a href="{google_url}" target="_blank" class="trend-link">
             <div class="trend-row">
@@ -218,4 +196,4 @@ if trends:
         """, unsafe_allow_html=True)
 
 else:
-    st.info("尚無資料，請稍後再試。")
+    st.info("目前無法取得資料，請稍後再試。")
