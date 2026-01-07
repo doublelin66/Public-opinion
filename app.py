@@ -7,6 +7,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import urllib.parse
 import random
+import time
 
 # ================= 1. 基礎設定 =================
 st.set_page_config(
@@ -24,34 +25,56 @@ except:
 
 genai.configure(api_key=API_KEY)
 
-# ================= 3. 定義新聞來源 =================
-def get_rss_url(category):
+# ================= 3. 定義新聞來源 (含備援網址) =================
+def get_rss_urls(category):
     base_search = "https://news.google.com/rss/search"
+    base_topic = "https://news.google.com/rss/topics"
     suffix = "hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     
+    # 產生主要的「精準搜尋」網址
     def make_search_url(query):
-        # 加入 when:2d 確保新聞新鮮度
         query_with_time = f"{query} when:2d"
         encoded_query = urllib.parse.quote(query_with_time)
         return f"{base_search}?q={encoded_query}&scoring=n&{suffix}"
 
-    topics = {
-        "首頁": [
+    # 備用：Google 官方分類 ID (比較不會被擋，但內容較廣泛)
+    # 這些 ID 是 Google News 台灣版的固定分類
+    topic_ids = {
+        "政治": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRGx1YlY4U0FBUWlHZ0pKVERNU0FBUW", # 台灣
+        "財經": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRGx6TVdZU0FBUWlHZ0pKVERNU0FBUW", # 財經
+        "科技": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRGRqTVhZU0FBUWlHZ0pKVERNU0FBUW", # 科技
+        "娛樂": "CAAqKggKIiRDQkFTRlFvSUwyMHZNREpxYW5RU0FBUWlHZ0pKVERNU0FBUW", # 娛樂
+        "運動": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRFp1ZEdvU0FBUWlHZ0pKVERNU0FBUW", # 體育
+        "國際": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRGx1YlY4U0FBUWlHZ0pKVERNU0FBUW", # 世界 (暫代)
+        "健康": "CAAqIaHZBAgESHgQAlIICgYI1p2w8wIw8MuzAzC4rYoD" # 健康
+    }
+
+    # 1. 定義首選網址 (Search)
+    primary_url = ""
+    if category == "首頁":
+        return [
             f"https://trends.google.com/trends/trendingsearches/daily/rss?geo=TW",
             f"https://news.google.com/rss?{suffix}"
-        ],
-        "政治": [make_search_url("台灣政治 立法院 行政院")],
-        "財經": [make_search_url("台灣股市 財經 台積電 營收")],
-        "科技": [make_search_url("台灣科技 半導體 AI 輝達")],
-        "娛樂": [make_search_url("台灣娛樂新聞 網紅 藝人 直播")],
-        "運動": [make_search_url("中華職棒 NBA 台灣運動")],
-        "國際": [make_search_url("國際新聞 美國 日本 中國")],
-        "健康": [make_search_url("健康醫療 食安 流感 腸病毒")]
-    }
-    return topics.get(category, topics["首頁"])
+        ]
+    elif category == "政治": primary_url = make_search_url("台灣政治 立法院 行政院")
+    elif category == "財經": primary_url = make_search_url("台灣股市 財經 台積電 營收")
+    elif category == "科技": primary_url = make_search_url("台灣科技 半導體 AI 輝達")
+    elif category == "娛樂": primary_url = make_search_url("台灣娛樂新聞 網紅 藝人 直播")
+    elif category == "運動": primary_url = make_search_url("中華職棒 NBA 台灣運動")
+    elif category == "國際": primary_url = make_search_url("國際新聞 美國 日本 中國")
+    elif category == "健康": primary_url = make_search_url("健康醫療 食安 流感 腸病毒")
+
+    # 2. 定義備援網址 (Topic)
+    backup_url = ""
+    if category in topic_ids:
+        backup_url = f"{base_topic}/{topic_ids[category]}?{suffix}"
+    else:
+        backup_url = f"https://news.google.com/rss?{suffix}" # 真的不行就回首頁
+
+    # 回傳一個清單：先試主要，失敗就試備用
+    return [primary_url, backup_url]
 
 # ================= 4. 核心功能：AI 分析 =================
-# 快取設定：30分鐘內不重新抓取，避免被擋
 @st.cache_data(ttl=1800) 
 def run_analysis(category):
     debug_logs = []
@@ -70,43 +93,62 @@ def run_analysis(category):
     except:
         model = genai.GenerativeModel('gemini-pro', safety_settings=safety_settings)
 
-    # B. 抓取資料
-    urls = get_rss_url(category)
+    # B. 抓取資料 (含備援邏輯)
+    target_urls = get_rss_urls(category)
     all_raw_data = []
     
-    # 偽裝 Headers
+    # 輪替使用不同的 User-Agent 降低被擋機率
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
+    ]
+    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Referer": "https://www.google.com/"
+        "User-Agent": random.choice(user_agents),
+        "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7"
     }
     cookies = {"CONSENT": "YES+"} 
 
-    for url in urls:
+    success_count = 0
+    
+    for url in target_urls:
+        if success_count > 0 and category != "首頁": break # 如果不是首頁，只要抓到一個來源就夠了(避免混合太雜)
+
         try:
+            # 隨機延遲 0.5~1.5 秒，模擬人類行為
+            time.sleep(random.uniform(0.5, 1.5))
+            
             response = requests.get(url, headers=headers, cookies=cookies, timeout=10)
+            
             if response.status_code == 200:
                 feed = feedparser.parse(response.content)
-                limit = 30 if category == "首頁" else 20
-                
-                for entry in feed.entries[:limit]:
-                    traffic = entry.ht_approx_traffic if hasattr(entry, 'ht_approx_traffic') else "N/A"
-                    all_raw_data.append({
-                        "title": entry.title,
-                        "traffic": traffic,
-                        "snippet": entry.summary if hasattr(entry, 'summary') else ""
-                    })
+                if len(feed.entries) > 0:
+                    debug_logs.append(f"✅ 成功抓取: {url[:40]}...")
+                    success_count += 1
+                    
+                    limit = 25 if category == "首頁" else 15
+                    for entry in feed.entries[:limit]:
+                        traffic = entry.ht_approx_traffic if hasattr(entry, 'ht_approx_traffic') else "N/A"
+                        all_raw_data.append({
+                            "title": entry.title,
+                            "traffic": traffic,
+                            "snippet": entry.summary if hasattr(entry, 'summary') else ""
+                        })
+                else:
+                    debug_logs.append(f"⚠️ 來源無內容: {url[:40]}...")
             else:
-                debug_logs.append(f"HTTP Error: {response.status_code} at {url}")
+                debug_logs.append(f"❌ HTTP {response.status_code}: {url[:40]}...")
+                
         except Exception as e:
-            debug_logs.append(str(e))
+            debug_logs.append(f"❌ 連線錯誤: {str(e)}")
             continue
 
     if not all_raw_data:
         return [], debug_logs
 
-    # C. AI 分析 (修正語法錯誤風險)
+    # C. AI 分析
     news_json = json.dumps(all_raw_data, ensure_ascii=False)
     
     if category == "首頁":
@@ -114,7 +156,7 @@ def run_analysis(category):
     else:
         task_desc = f"請專注於 **{category}** 領域，列出 **10-15 個** 該領域 **這兩天內** 最受關注的議題。"
 
-    # --- 這裡將 JSON 範例獨立出來，避免 f-string 語法錯誤 ---
+    # JSON 範例 (防呆)
     json_example = f"""
     [
       {{
@@ -130,16 +172,16 @@ def run_analysis(category):
     """
 
     prompt = f"""
-    你是一個台灣社群趨勢觀察家。請分析以下資料，找出「現在進行式」的熱門話題。
+    你是一個台灣社群趨勢觀察家。請分析以下資料。
     {task_desc}
 
     原始資料：
     {news_json}
     
     要求：
-    1. **時效優先**：請忽略舊聞，只專注在最近發生的事件。
+    1. **時效優先**：請忽略舊聞。
     2. 合併重複的事件。
-    3. 有流量數據 (如 "50,000+") 分數給高。
+    3. 有流量數據分數給高。
     4. 繁體中文摘要。
     
     請回傳 JSON Array：
@@ -183,7 +225,7 @@ with col2:
 
 st.divider()
 
-with st.spinner(f'🔍 正在掃描 {current_category} 版面「最新」新聞與趨勢...'):
+with st.spinner(f'🔍 正在掃描 {current_category} 版面新聞...'):
     trends, logs = run_analysis(current_category)
 
 if trends:
@@ -238,5 +280,9 @@ if trends:
         """, unsafe_allow_html=True)
 
 else:
-    st.error("目前流量過大，資料暫時無法讀取。")
-    st.info("💡 系統提示：這可能是因為 Google 新聞暫時限制了連線，請過 10-15 分鐘後再回來試試看，無需一直按重新整理。")
+    st.error("目前流量過大，請稍後再試。")
+    # 只在真的全掛時才顯示除錯資訊
+    with st.expander("🛠️ 系統診斷報告", expanded=True):
+        st.write("嘗試連線紀錄：")
+        for log in logs:
+            st.write(log)
