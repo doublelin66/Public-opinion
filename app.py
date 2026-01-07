@@ -5,7 +5,7 @@ import requests
 import json
 import pandas as pd
 from datetime import datetime
-import urllib.parse
+import urllib.parse # 用來處理中文網址
 
 # ================= 1. 基礎設定 =================
 st.set_page_config(
@@ -23,32 +23,37 @@ except:
 
 genai.configure(api_key=API_KEY)
 
-# ================= 3. 定義新聞來源 (改用更穩定的 Search RSS) =================
+# ================= 3. 定義新聞來源 (關鍵修正：中文編碼) =================
 def get_rss_url(category):
-    # Google News RSS 基礎網址
     base_search = "https://news.google.com/rss/search"
     suffix = "hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     
-    # 使用「關鍵字搜尋」代替「Topic ID」，大幅提升穩定度
+    # 這裡會用 urllib.parse.quote 把中文轉成 URL 編碼
+    # 例如 "台灣政治" -> "%E5%8F%B0%E7%81%A3%E6%94%BF%E6%B2%BB"
+    def make_search_url(query):
+        encoded_query = urllib.parse.quote(query)
+        return f"{base_search}?q={encoded_query}&{suffix}"
+
     topics = {
         "首頁": [
-            f"https://trends.google.com/trends/trendingsearches/daily/rss?geo=TW", # 搜尋熱榜 (最穩)
-            f"https://news.google.com/rss?{suffix}" # 綜合頭條
+            f"https://trends.google.com/trends/trendingsearches/daily/rss?geo=TW",
+            f"https://news.google.com/rss?{suffix}"
         ],
-        # 以下全部改用 Search Query，確保一定有資料
-        "政治": [f"{base_search}?q=台灣政治+立法院&{suffix}"],
-        "財經": [f"{base_search}?q=台灣股市+財經+台積電&{suffix}"],
-        "科技": [f"{base_search}?q=台灣科技+半導體+AI&{suffix}"],
-        "娛樂": [f"{base_search}?q=台灣娛樂新聞+網紅+藝人&{suffix}"],
-        "運動": [f"{base_search}?q=中華職棒+NBA+台灣運動&{suffix}"],
-        "國際": [f"{base_search}?q=國際新聞+美國+中國&{suffix}"],
-        "健康": [f"{base_search}?q=健康醫療+食安+疫情&{suffix}"]
+        "政治": [make_search_url("台灣政治 立法院")],
+        "財經": [make_search_url("台灣股市 財經 台積電")],
+        "科技": [make_search_url("台灣科技 半導體 AI")],
+        "娛樂": [make_search_url("台灣娛樂新聞 網紅 藝人")],
+        "運動": [make_search_url("中華職棒 NBA 台灣運動")],
+        "國際": [make_search_url("國際新聞 美國 中國")],
+        "健康": [make_search_url("健康醫療 食安 疫情")]
     }
     return topics.get(category, topics["首頁"])
 
-# ================= 4. 核心功能：AI 分析 =================
+# ================= 4. 核心功能：AI 分析 (含除錯紀錄) =================
 @st.cache_data(ttl=1800)
 def run_analysis(category):
+    debug_logs = [] # 記錄系統運作過程
+    
     # A. 模型設定
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -58,9 +63,8 @@ def run_analysis(category):
     ]
     generation_config = {"temperature": 1, "response_mime_type": "application/json"}
     
-    model_name = 'gemini-2.5-flash'
     try:
-        model = genai.GenerativeModel(model_name, safety_settings=safety_settings, generation_config=generation_config)
+        model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety_settings, generation_config=generation_config)
     except:
         model = genai.GenerativeModel('gemini-pro', safety_settings=safety_settings)
 
@@ -68,19 +72,18 @@ def run_analysis(category):
     urls = get_rss_url(category)
     all_raw_data = []
     
-    # 增加 Cookies 繞過 Google 的一些反爬蟲機制
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Referer": "https://news.google.com/"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
-    cookies = {"CONSENT": "YES+"} 
 
     for url in urls:
         try:
-            response = requests.get(url, headers=headers, cookies=cookies, timeout=10)
+            debug_logs.append(f"正在抓取: {url}")
+            response = requests.get(url, headers=headers, timeout=10)
+            
             if response.status_code == 200:
                 feed = feedparser.parse(response.content)
+                debug_logs.append(f"✅ 成功，抓到 {len(feed.entries)} 則新聞")
                 
                 limit = 25 if category == "首頁" else 15
                 
@@ -91,11 +94,14 @@ def run_analysis(category):
                         "traffic": traffic,
                         "snippet": entry.summary if hasattr(entry, 'summary') else ""
                     })
-        except:
+            else:
+                debug_logs.append(f"❌ 失敗，狀態碼: {response.status_code}")
+        except Exception as e:
+            debug_logs.append(f"❌ 錯誤: {str(e)}")
             continue
 
     if not all_raw_data:
-        return []
+        return [], debug_logs # 回傳空的資料和錯誤紀錄
 
     # C. AI 分析
     news_json = json.dumps(all_raw_data, ensure_ascii=False)
@@ -134,11 +140,13 @@ def run_analysis(category):
     try:
         response = model.generate_content(prompt)
         cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
-        if not cleaned_text: return []
-        return json.loads(cleaned_text)
+        if not cleaned_text: 
+            debug_logs.append("⚠️ AI 回傳空白內容")
+            return [], debug_logs
+        return json.loads(cleaned_text), debug_logs
     except Exception as e:
-        print(f"Error: {e}")
-        return []
+        debug_logs.append(f"⚠️ AI 分析錯誤: {e}")
+        return [], debug_logs
 
 # ================= 5. 介面顯示 (UI) =================
 
@@ -161,17 +169,13 @@ category_map = {
 }
 current_category = category_map[selection]
 
-# --- 標題顯示邏輯修正 ---
+# 標題區
 col1, col2 = st.columns([3, 1])
 with col1:
-    # 這裡做了判斷：如果是首頁，直接顯示「台灣熱門討論」
-    # 如果是其他頁面，則顯示「政治熱門討論」、「財經熱門討論」等
     if current_category == "首頁":
-        display_title = "🇹🇼 台灣熱門討論"
+        st.title("🇹🇼 台灣熱門討論")
     else:
-        display_title = f"🇹🇼 {current_category}熱門討論"
-        
-    st.title(display_title)
+        st.title(f"🇹🇼 {current_category}熱門討論")
     st.caption(f"即時 AI 輿情分析 | 更新: {datetime.now().strftime('%H:%M')}")
 
 with col2:
@@ -183,9 +187,10 @@ st.divider()
 
 # 執行分析
 with st.spinner(f'🔍 正在掃描 {current_category} 版面新聞與趨勢...'):
-    trends = run_analysis(current_category)
+    trends, logs = run_analysis(current_category)
 
 if trends:
+    # 顯示結果
     st.markdown("""
     <style>
         a.trend-link { text-decoration: none !important; color: inherit !important; display: block; }
@@ -237,4 +242,9 @@ if trends:
         """, unsafe_allow_html=True)
 
 else:
-    st.info("目前無法取得資料，請稍後再試。")
+    # --- 這裡就是關鍵的除錯區 ---
+    st.error("目前無法取得資料，請參考下方系統紀錄：")
+    with st.expander("🛠️ 系統除錯紀錄 (Debug Logs)", expanded=True):
+        for log in logs:
+            st.write(log)
+    st.info("請將上述紀錄截圖回報，以便修復。")
