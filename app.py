@@ -25,7 +25,7 @@ except:
 
 genai.configure(api_key=API_KEY)
 
-# ================= 3. 定義新聞來源 =================
+# ================= 3. 定義新聞來源 (RSS) =================
 def get_rss_urls(category):
     base_search = "https://news.google.com/rss/search"
     base_topic = "https://news.google.com/rss/topics"
@@ -37,6 +37,7 @@ def get_rss_urls(category):
         encoded_query = urllib.parse.quote(query_with_time)
         return f"{base_search}?q={encoded_query}&scoring=n&{suffix}"
 
+    # Google News 固定分類 ID (備援用)
     topic_ids = {
         "政治": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRGx1YlY4U0FBUWlHZ0pKVERNU0FBUW",
         "財經": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRGx6TVdZU0FBUWlHZ0pKVERNU0FBUW",
@@ -61,6 +62,7 @@ def get_rss_urls(category):
     elif category == "國際": primary_url = make_search_url("國際新聞 美國 日本 中國")
     elif category == "健康": primary_url = make_search_url("健康醫療 食安 流感 腸病毒")
 
+    # 備援網址
     backup_url = ""
     if category in topic_ids:
         backup_url = f"{base_topic}/{topic_ids[category]}?{suffix}"
@@ -69,15 +71,16 @@ def get_rss_urls(category):
 
     return [primary_url, backup_url]
 
-# ================= 4. 核心功能：AI 分析 (全模型輪替) =================
+# ================= 4. 核心功能：AI 分析 (鎖定 1.5 Flash) =================
 @st.cache_data(ttl=1800) 
 def run_analysis(category):
     debug_logs = []
     
-    # 抓取資料
+    # --- 步驟 A: 抓取 RSS 資料 ---
     target_urls = get_rss_urls(category)
     all_raw_data = []
     
+    # 隨機 User-Agent 避免被新聞網站擋
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
@@ -115,7 +118,7 @@ def run_analysis(category):
     if not all_raw_data:
         return [], debug_logs
 
-    # --- AI 分析 ---
+    # --- 步驟 B: 準備 Prompt ---
     news_json = json.dumps(all_raw_data, ensure_ascii=False)
     
     if category == "首頁":
@@ -154,18 +157,14 @@ def run_analysis(category):
     {json_example}
     """
 
-    # --- 關鍵修正：超級散彈槍模式 ---
-    # 這裡列出了 Google 目前所有開放的免費模型名稱
-    # 只要其中有一個能通，您的網站就會活著
+    # --- 步驟 C: 呼叫 AI (鎖定 1.5 Flash 系列) ---
+    # 這裡只列出額度高、穩定的 1.5 版本
     models_to_try = [
-        'gemini-2.0-flash',       # 最強，但容易被擋
-        'gemini-1.5-flash',       # 額度最高 (每天1500次)，最穩
-        'gemini-1.5-flash-latest',# 1.5 的最新版變體
-        'gemini-1.5-flash-001',   # 1.5 的舊版變體 (有時候 404 是因為沒加版號)
-        'gemini-1.5-flash-002',   # 1.5 的更新版變體
-        'gemini-1.5-flash-8b',    # 8B 版 (輕量級，額度通常獨立計算)
-        'gemini-2.0-flash-exp',   # 2.0 實驗版
-        'gemini-2.5-flash'        # 2.5 預覽版
+        'gemini-1.5-flash',       # 主力：每天 1500 次
+        'gemini-1.5-flash-latest',# 備用：最新版
+        'gemini-1.5-flash-001',   # 備用：舊版穩定
+        'gemini-1.5-flash-002',   # 備用：更新版
+        'gemini-1.5-pro'          # 最後手段：比較聰明但只有 50 次 (留著救急)
     ]
 
     safety_settings = [
@@ -178,9 +177,10 @@ def run_analysis(category):
 
     for model_name in models_to_try:
         try:
-            # 這裡不印 Log 了，以免嚇到使用者，默默嘗試就好
+            # 建立模型
             model = genai.GenerativeModel(model_name, safety_settings=safety_settings, generation_config=generation_config)
             
+            # 發送請求
             response = model.generate_content(prompt)
             cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
             
@@ -188,8 +188,8 @@ def run_analysis(category):
                 return json.loads(cleaned_text), debug_logs
                 
         except Exception as e:
-            # 失敗就換下一個，不要停
-            debug_logs.append(f"❌ {model_name} 失敗，嘗試下一個...")
+            # 失敗就換下一個
+            debug_logs.append(f"⚠️ {model_name} 暫時無法使用，切換下一備援...")
             time.sleep(0.5)
             continue
             
@@ -224,7 +224,7 @@ with col2:
 
 st.divider()
 
-with st.spinner(f'🔍 正在掃描 {current_category} 版面，並嘗試連接最佳 AI 模型...'):
+with st.spinner(f'🔍 正在掃描 {current_category} 版面，由 Gemini 1.5 Flash 進行高速分析...'):
     trends, logs = run_analysis(current_category)
 
 if trends:
@@ -280,7 +280,8 @@ if trends:
 
 else:
     st.error("目前流量過大，資料暫時無法讀取。")
-    with st.expander("🛠️ 系統診斷報告", expanded=True):
+    # 隱藏式除錯報告，若使用者想看再點開
+    with st.expander("🛠️ 系統診斷報告", expanded=False):
         st.write("嘗試連線紀錄：")
         for log in logs:
             st.write(log)
