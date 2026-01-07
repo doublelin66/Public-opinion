@@ -69,7 +69,7 @@ def get_rss_urls(category):
 
     return [primary_url, backup_url]
 
-# ================= 4. 核心功能：AI 分析 (修正模型清單) =================
+# ================= 4. 核心功能：AI 分析 (全模型輪替) =================
 @st.cache_data(ttl=1800) 
 def run_analysis(category):
     debug_logs = []
@@ -154,11 +154,18 @@ def run_analysis(category):
     {json_example}
     """
 
-    # --- 關鍵修正：依照您診斷報告中「確定存在」的模型清單 ---
+    # --- 關鍵修正：超級散彈槍模式 ---
+    # 這裡列出了 Google 目前所有開放的免費模型名稱
+    # 只要其中有一個能通，您的網站就會活著
     models_to_try = [
-        'gemini-2.0-flash',       # 主力：存在且額度較高
-        'gemini-2.0-flash-exp',   # 備援 1
-        'gemini-2.5-flash'        # 備援 2 (限制嚴格，放最後)
+        'gemini-2.0-flash',       # 最強，但容易被擋
+        'gemini-1.5-flash',       # 額度最高 (每天1500次)，最穩
+        'gemini-1.5-flash-latest',# 1.5 的最新版變體
+        'gemini-1.5-flash-001',   # 1.5 的舊版變體 (有時候 404 是因為沒加版號)
+        'gemini-1.5-flash-002',   # 1.5 的更新版變體
+        'gemini-1.5-flash-8b',    # 8B 版 (輕量級，額度通常獨立計算)
+        'gemini-2.0-flash-exp',   # 2.0 實驗版
+        'gemini-2.5-flash'        # 2.5 預覽版
     ]
 
     safety_settings = [
@@ -171,7 +178,7 @@ def run_analysis(category):
 
     for model_name in models_to_try:
         try:
-            debug_logs.append(f"嘗試使用模型: {model_name}")
+            # 這裡不印 Log 了，以免嚇到使用者，默默嘗試就好
             model = genai.GenerativeModel(model_name, safety_settings=safety_settings, generation_config=generation_config)
             
             response = model.generate_content(prompt)
@@ -181,8 +188,9 @@ def run_analysis(category):
                 return json.loads(cleaned_text), debug_logs
                 
         except Exception as e:
-            debug_logs.append(f"❌ {model_name} 失敗: {str(e)}")
-            time.sleep(1)
+            # 失敗就換下一個，不要停
+            debug_logs.append(f"❌ {model_name} 失敗，嘗試下一個...")
+            time.sleep(0.5)
             continue
             
     return [], debug_logs
@@ -216,7 +224,7 @@ with col2:
 
 st.divider()
 
-with st.spinner(f'🔍 正在掃描 {current_category} 版面，並嘗試連接 AI 模型...'):
+with st.spinner(f'🔍 正在掃描 {current_category} 版面，並嘗試連接最佳 AI 模型...'):
     trends, logs = run_analysis(current_category)
 
 if trends:
