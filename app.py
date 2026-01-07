@@ -5,10 +5,11 @@ import requests
 import json
 import pandas as pd
 from datetime import datetime
+import urllib.parse # 新增這個庫，用來處理網址編碼
 
 # ================= 1. 基礎設定 =================
 st.set_page_config(
-    page_title="🇹🇼臺灣熱門討論",  # <--- 修改這裡：瀏覽器分頁名稱
+    page_title="🇹🇼臺灣熱門討論",
     page_icon="🔥",
     layout="wide"
 )
@@ -42,13 +43,11 @@ def run_analysis():
     all_raw_data = []
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
-    # 迴圈抓取
     for category_name, url in rss_sources.items():
         try:
             response = requests.get(url, headers=headers, timeout=10)
             feed = feedparser.parse(response.content)
             
-            # 搜尋熱榜抓 20 則，其他抓 10 則
             limit = 20 if "搜尋" in category_name else 10
             
             for entry in feed.entries[:limit]:
@@ -80,10 +79,8 @@ def run_analysis():
     
     🔥 任務指令：
     1. **主題要多**：請列出 **15 到 20 個** 不同的獨立話題。
-    2. **話題多元**：涵蓋 政治、娛樂(藝人/網紅)、運動(棒球/籃球)、生活、財經。
-    3. **討論熱度估算**：
-       - 若有流量數據(如 "50,000+")，分數給予 (90-100)。
-       - 若無流量但為頭條，分數給予 (70-85)。
+    2. **話題多元**：涵蓋 政治、娛樂、運動、生活、財經。
+    3. **討論熱度估算**：依照流量數據或新聞重要性給分 (0-100)。
     4. **繁體中文**：請用台灣人習慣的用語撰寫 summary。
 
     請嚴格遵守以下 JSON 輸出格式 (Array)，直接輸出 JSON：
@@ -93,7 +90,7 @@ def run_analysis():
         "keyword": "話題關鍵字",
         "category": "分類 (Entertainment, Sports, Politics, Tech, Life)",
         "score": 95,
-        "volume_label": "討論量級 (例如: 5萬+ 搜尋 / 熱議中)",
+        "volume_label": "討論量級",
         "summary": "簡短說明為什麼大家在討論這個。",
         "hashtags": ["#tag1", "#tag2"]
       }}
@@ -111,8 +108,8 @@ def run_analysis():
 # ================= 4. 介面顯示 (UI) =================
 col1, col2 = st.columns([3, 1])
 with col1:
-    st.title("🇹🇼臺灣熱門討論")  # <--- 修改這裡：網頁主標題
-    st.caption(f"資料來源：Google 每日搜尋熱榜 + 即時新聞 | 更新: {datetime.now().strftime('%H:%M')}")
+    st.title("🇹🇼臺灣熱門討論")
+    st.caption(f"點擊卡片可查看相關新聞 | 更新: {datetime.now().strftime('%H:%M')}")
 
 with col2:
     if st.button("🔄 刷新熱榜"):
@@ -127,18 +124,29 @@ with st.spinner('🔍 正在挖掘全台熱搜與社群話題...'):
 if trends:
     st.markdown("""
     <style>
+        /* 讓超連結去除底線，並保持顏色 */
+        a.trend-link {
+            text-decoration: none !important;
+            color: inherit !important;
+            display: block;
+        }
+        
         .trend-row {
             background-color: white; 
             padding: 15px; 
             border-radius: 10px; 
             margin-bottom: 12px; 
             border: 1px solid #eee;
-            transition: transform 0.2s;
+            transition: all 0.2s ease;
+            cursor: pointer; /* 讓滑鼠變成手指形狀 */
         }
+        
         .trend-row:hover {
-            transform: scale(1.01);
-            box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+            transform: translateY(-2px); /* 輕微浮起 */
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            border-color: #FF4B4B; /* 邊框變色 */
         }
+
         .rank-num {
             font-size: 1.5em; 
             font-weight: bold; 
@@ -168,37 +176,45 @@ if trends:
     </style>
     """, unsafe_allow_html=True)
 
-    # 上方圖表
+    # 上方圖表 (保留)
     st.subheader("📊 話題熱度分佈")
     df = pd.DataFrame(trends)
     if not df.empty:
         st.bar_chart(df.set_index('keyword')['score'], color="#FF4B4B")
 
     # 排行榜
-    st.subheader("🏆 全台話題排行榜")
+    st.subheader("🏆 全台話題排行榜 (點擊可看新聞)")
     
     for i, item in enumerate(trends):
         rank_class = f"rank-{i+1}" if i < 3 else ""
         
+        # 製作 Google 搜尋連結
+        # 使用 urllib.parse.quote 把中文轉成網址編碼 (例如 "台積電" -> "%E5%8F%B0...")
+        search_query = urllib.parse.quote(item['keyword'])
+        google_url = f"https://www.google.com/search?q={search_query}"
+        
+        # 使用 HTML <a> 標籤包住整個卡片，target="_blank" 代表開新視窗
         st.markdown(f"""
-        <div class="trend-row">
-            <div style="display:flex; align-items:center;">
-                <div class="rank-num {rank_class}">{i+1}</div>
-                <div style="flex-grow:1; padding-left:15px;">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <h3 style="margin:0; font-size:1.2em; color:#333;">{item['keyword']}</h3>
-                        <span class="volume-badge">🔥 {item.get('volume_label', '熱議中')}</span>
-                    </div>
-                    <div style="margin-top:5px; font-size:0.9em; color:#666;">
-                        <span class="category-badge">{item['category']}</span>
-                        <span style="margin-left:8px;">{item['summary']}</span>
-                    </div>
-                    <div style="margin-top:8px; font-size:0.85em; color:#888;">
-                        {' '.join([f'#{tag}' for tag in item.get('hashtags', [])]).replace('##', '#')}
+        <a href="{google_url}" target="_blank" class="trend-link">
+            <div class="trend-row">
+                <div style="display:flex; align-items:center;">
+                    <div class="rank-num {rank_class}">{i+1}</div>
+                    <div style="flex-grow:1; padding-left:15px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <h3 style="margin:0; font-size:1.2em; color:#333;">{item['keyword']} 🔗</h3>
+                            <span class="volume-badge">🔥 {item.get('volume_label', '熱議中')}</span>
+                        </div>
+                        <div style="margin-top:5px; font-size:0.9em; color:#666;">
+                            <span class="category-badge">{item['category']}</span>
+                            <span style="margin-left:8px;">{item['summary']}</span>
+                        </div>
+                        <div style="margin-top:8px; font-size:0.85em; color:#888;">
+                            {' '.join([f'#{tag}' for tag in item.get('hashtags', [])]).replace('##', '#')}
+                        </div>
                     </div>
                 </div>
             </div>
-        </div>
+        </a>
         """, unsafe_allow_html=True)
 
 else:
