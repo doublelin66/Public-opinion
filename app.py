@@ -25,31 +25,29 @@ except:
 
 genai.configure(api_key=API_KEY)
 
-# ================= 3. 定義新聞來源 (含備援網址) =================
+# ================= 3. 定義新聞來源 =================
 def get_rss_urls(category):
     base_search = "https://news.google.com/rss/search"
     base_topic = "https://news.google.com/rss/topics"
     suffix = "hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
     
-    # 產生主要的「精準搜尋」網址
     def make_search_url(query):
+        # 加入 when:2d 確保新聞新鮮度
         query_with_time = f"{query} when:2d"
         encoded_query = urllib.parse.quote(query_with_time)
         return f"{base_search}?q={encoded_query}&scoring=n&{suffix}"
 
-    # 備用：Google 官方分類 ID (比較不會被擋，但內容較廣泛)
-    # 這些 ID 是 Google News 台灣版的固定分類
+    # Google News 固定分類 ID (備援用)
     topic_ids = {
-        "政治": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRGx1YlY4U0FBUWlHZ0pKVERNU0FBUW", # 台灣
-        "財經": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRGx6TVdZU0FBUWlHZ0pKVERNU0FBUW", # 財經
-        "科技": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRGRqTVhZU0FBUWlHZ0pKVERNU0FBUW", # 科技
-        "娛樂": "CAAqKggKIiRDQkFTRlFvSUwyMHZNREpxYW5RU0FBUWlHZ0pKVERNU0FBUW", # 娛樂
-        "運動": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRFp1ZEdvU0FBUWlHZ0pKVERNU0FBUW", # 體育
-        "國際": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRGx1YlY4U0FBUWlHZ0pKVERNU0FBUW", # 世界 (暫代)
-        "健康": "CAAqIaHZBAgESHgQAlIICgYI1p2w8wIw8MuzAzC4rYoD" # 健康
+        "政治": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRGx1YlY4U0FBUWlHZ0pKVERNU0FBUW",
+        "財經": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRGx6TVdZU0FBUWlHZ0pKVERNU0FBUW",
+        "科技": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRGRqTVhZU0FBUWlHZ0pKVERNU0FBUW",
+        "娛樂": "CAAqKggKIiRDQkFTRlFvSUwyMHZNREpxYW5RU0FBUWlHZ0pKVERNU0FBUW",
+        "運動": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRFp1ZEdvU0FBUWlHZ0pKVERNU0FBUW",
+        "國際": "CAAqKggKIiRDQkFTRlFvSUwyMHZNRGx1YlY4U0FBUWlHZ0pKVERNU0FBUW",
+        "健康": "CAAqIaHZBAgESHgQAlIICgYI1p2w8wIw8MuzAzC4rYoD"
     }
 
-    # 1. 定義首選網址 (Search)
     primary_url = ""
     if category == "首頁":
         return [
@@ -64,44 +62,28 @@ def get_rss_urls(category):
     elif category == "國際": primary_url = make_search_url("國際新聞 美國 日本 中國")
     elif category == "健康": primary_url = make_search_url("健康醫療 食安 流感 腸病毒")
 
-    # 2. 定義備援網址 (Topic)
+    # 備援網址
     backup_url = ""
     if category in topic_ids:
         backup_url = f"{base_topic}/{topic_ids[category]}?{suffix}"
     else:
-        backup_url = f"https://news.google.com/rss?{suffix}" # 真的不行就回首頁
+        backup_url = f"https://news.google.com/rss?{suffix}"
 
-    # 回傳一個清單：先試主要，失敗就試備用
     return [primary_url, backup_url]
 
-# ================= 4. 核心功能：AI 分析 =================
+# ================= 4. 核心功能：AI 分析 (含自動換模型) =================
 @st.cache_data(ttl=1800) 
 def run_analysis(category):
     debug_logs = []
     
-    # A. 模型設定
-    safety_settings = [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-    ]
-    generation_config = {"temperature": 1, "response_mime_type": "application/json"}
-    
-    try:
-        model = genai.GenerativeModel('gemini-2.5-flash', safety_settings=safety_settings, generation_config=generation_config)
-    except:
-        model = genai.GenerativeModel('gemini-pro', safety_settings=safety_settings)
-
-    # B. 抓取資料 (含備援邏輯)
+    # 抓取資料
     target_urls = get_rss_urls(category)
     all_raw_data = []
     
-    # 輪替使用不同的 User-Agent 降低被擋機率
+    # User-Agent 輪替
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
     ]
     
     headers = {
@@ -112,22 +94,14 @@ def run_analysis(category):
     cookies = {"CONSENT": "YES+"} 
 
     success_count = 0
-    
     for url in target_urls:
-        if success_count > 0 and category != "首頁": break # 如果不是首頁，只要抓到一個來源就夠了(避免混合太雜)
-
+        if success_count > 0 and category != "首頁": break 
         try:
-            # 隨機延遲 0.5~1.5 秒，模擬人類行為
-            time.sleep(random.uniform(0.5, 1.5))
-            
+            time.sleep(random.uniform(0.1, 0.5)) # 降低延遲，加快速度
             response = requests.get(url, headers=headers, cookies=cookies, timeout=10)
-            
             if response.status_code == 200:
                 feed = feedparser.parse(response.content)
                 if len(feed.entries) > 0:
-                    debug_logs.append(f"✅ 成功抓取: {url[:40]}...")
-                    success_count += 1
-                    
                     limit = 25 if category == "首頁" else 15
                     for entry in feed.entries[:limit]:
                         traffic = entry.ht_approx_traffic if hasattr(entry, 'ht_approx_traffic') else "N/A"
@@ -136,19 +110,15 @@ def run_analysis(category):
                             "traffic": traffic,
                             "snippet": entry.summary if hasattr(entry, 'summary') else ""
                         })
-                else:
-                    debug_logs.append(f"⚠️ 來源無內容: {url[:40]}...")
-            else:
-                debug_logs.append(f"❌ HTTP {response.status_code}: {url[:40]}...")
-                
+                    success_count += 1
         except Exception as e:
-            debug_logs.append(f"❌ 連線錯誤: {str(e)}")
+            debug_logs.append(f"連線錯誤: {str(e)}")
             continue
 
     if not all_raw_data:
         return [], debug_logs
 
-    # C. AI 分析
+    # --- 關鍵修改：模型自動輪替機制 ---
     news_json = json.dumps(all_raw_data, ensure_ascii=False)
     
     if category == "首頁":
@@ -156,7 +126,6 @@ def run_analysis(category):
     else:
         task_desc = f"請專注於 **{category}** 領域，列出 **10-15 個** 該領域 **這兩天內** 最受關注的議題。"
 
-    # JSON 範例 (防呆)
     json_example = f"""
     [
       {{
@@ -172,7 +141,7 @@ def run_analysis(category):
     """
 
     prompt = f"""
-    你是一個台灣社群趨勢觀察家。請分析以下資料。
+    你是一個台灣社群趨勢觀察家。請分析以下資料，找出「現在進行式」的熱門話題。
     {task_desc}
 
     原始資料：
@@ -187,14 +156,42 @@ def run_analysis(category):
     請回傳 JSON Array：
     {json_example}
     """
-    
-    try:
-        response = model.generate_content(prompt)
-        cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
-        if not cleaned_text: return [], debug_logs
-        return json.loads(cleaned_text), debug_logs
-    except Exception as e:
-        return [], [str(e)]
+
+    # 定義模型優先順序：1.5 Flash (額度最高) -> 1.5 Pro -> Pro -> 2.5 Flash
+    models_to_try = [
+        'gemini-1.5-flash', # 第一志願：每天 1500 次，速度快
+        'gemini-1.5-pro',   # 第二志願：比較聰明，每天 50 次
+        'gemini-pro',       # 第三志願：舊版，穩定
+        'gemini-2.5-flash'  # 最後手段：每天只有 20 次 (您剛剛就是卡在這)
+    ]
+
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    ]
+    generation_config = {"temperature": 1, "response_mime_type": "application/json"}
+
+    # 迴圈嘗試所有模型
+    for model_name in models_to_try:
+        try:
+            debug_logs.append(f"嘗試使用模型: {model_name}")
+            model = genai.GenerativeModel(model_name, safety_settings=safety_settings, generation_config=generation_config)
+            
+            response = model.generate_content(prompt)
+            cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
+            
+            if cleaned_text:
+                return json.loads(cleaned_text), debug_logs # 成功就直接回傳，結束函式
+                
+        except Exception as e:
+            # 如果是 429 錯誤 (Quota exceeded)，就印出來並繼續下一個迴圈
+            debug_logs.append(f"❌ {model_name} 失敗: {str(e)}")
+            time.sleep(1) # 休息一秒再試下一個
+            continue
+            
+    return [], debug_logs # 如果全部模型都失敗，才回傳空值
 
 # ================= 5. 介面顯示 (UI) =================
 
@@ -225,7 +222,7 @@ with col2:
 
 st.divider()
 
-with st.spinner(f'🔍 正在掃描 {current_category} 版面新聞...'):
+with st.spinner(f'🔍 正在掃描 {current_category} 版面，並嘗試連接最佳 AI 模型...'):
     trends, logs = run_analysis(current_category)
 
 if trends:
@@ -280,8 +277,7 @@ if trends:
         """, unsafe_allow_html=True)
 
 else:
-    st.error("目前流量過大，請稍後再試。")
-    # 只在真的全掛時才顯示除錯資訊
+    st.error("目前流量過大，資料暫時無法讀取。")
     with st.expander("🛠️ 系統診斷報告", expanded=True):
         st.write("嘗試連線紀錄：")
         for log in logs:
